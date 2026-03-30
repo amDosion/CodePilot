@@ -7,7 +7,7 @@ import { ChatView } from '@/components/chat/ChatView';
 import { RemoteShellView } from '@/components/chat/RemoteShellView';
 import { HugeiconsIcon } from '@hugeicons/react';
 import { StructureFolderIcon } from '@hugeicons/core-free-icons';
-import { Loading02Icon, PencilEdit01Icon, Menu01Icon } from '@hugeicons/core-free-icons';
+import { Loading02Icon, PencilEdit01Icon } from '@hugeicons/core-free-icons';
 import { Input } from '@/components/ui/input';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { usePanel } from '@/hooks/usePanel';
@@ -44,7 +44,7 @@ export default function ChatSessionPage({ params }: ChatSessionPageProps) {
   const [isEditingTitle, setIsEditingTitle] = useState(false);
   const [editTitle, setEditTitle] = useState('');
   const titleInputRef = useRef<HTMLInputElement>(null);
-  const { panelOpen, setWorkingDirectory, setSessionId, setSessionTitle: setPanelSessionTitle, setPanelOpen, setWorkspaceMode, setRemoteConnectionId, toggleChatList } = usePanel();
+  const { panelOpen, setWorkingDirectory, setSessionId, setSessionTitle: setPanelSessionTitle, setPanelOpen, setWorkspaceMode, setRemoteConnectionId } = usePanel();
   const { t } = useTranslation();
 
   const isRemoteWorkspace = sessionWorkspaceTransport === 'ssh_direct';
@@ -236,13 +236,7 @@ export default function ChatSessionPage({ params }: ChatSessionPageProps) {
           className="flex h-12 shrink-0 items-center justify-center px-4 gap-1 relative"
           style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}
         >
-          <button
-            onClick={toggleChatList}
-            className="lg:hidden absolute left-2 top-1/2 -translate-y-1/2 flex h-8 w-8 items-center justify-center rounded-md hover:bg-muted transition-colors"
-            style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
-          >
-            <HugeiconsIcon icon={Menu01Icon} className="h-4 w-4 text-muted-foreground" />
-          </button>
+
           {projectName && (
             <>
               <Tooltip>

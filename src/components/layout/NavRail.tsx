@@ -45,7 +45,7 @@ const navItems = [
   { href: "/settings", label: "Settings", icon: Settings02Icon },
 ] as const;
 
-export function NavRail({ onToggleChatList, hasUpdate, readyToInstall, skipPermissionsActive }: NavRailProps) {
+export function NavRail({ chatListOpen, onToggleChatList, hasUpdate, readyToInstall, skipPermissionsActive }: NavRailProps) {
   const pathname = usePathname();
   const router = useRouter();
   const { theme, setTheme } = useTheme();
@@ -64,7 +64,7 @@ export function NavRail({ onToggleChatList, hasUpdate, readyToInstall, skipPermi
   const isChatRoute = pathname === "/chat" || pathname.startsWith("/chat/");
 
   return (
-    <aside className="hidden w-14 shrink-0 flex-col items-center bg-sidebar pb-3 lg:flex">
+    <aside className={`w-14 shrink-0 flex-col items-center bg-sidebar pb-3 lg:flex ${chatListOpen ? "flex" : "hidden"}`}>
       {/* Nav icons */}
       <nav className="flex flex-1 flex-col items-center gap-1">
         {navItems.map((item) => {
