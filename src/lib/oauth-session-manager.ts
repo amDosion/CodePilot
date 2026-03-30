@@ -159,8 +159,10 @@ function storeClaudeCredentials(
     accessToken: tokenRes.access_token,
     refreshToken: tokenRes.refresh_token ?? null,
     expiresAt,
+    scopes: CLAUDE_SCOPE.split(" "),
     subscriptionType:
       profile.subscriptionType ?? profile.subscription ?? null,
+    rateLimitTier: profile.rateLimitTier ?? null,
   };
 
   fs.writeFileSync(credPath, JSON.stringify(existing, null, 2), {
