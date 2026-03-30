@@ -2,7 +2,10 @@ import crypto from "crypto";
 import fs from "fs";
 import path from "path";
 import os from "os";
+import { spawn, type ChildProcess } from "child_process";
 import { type CliEngine } from "@/lib/cli-auth-utils";
+import { buildCodexSpawnCommand } from "@/lib/codex-cli";
+import { buildGeminiSpawnCommand } from "@/lib/gemini-cli";
 
 // ── Claude OAuth constants (extracted from Claude CLI binary) ───────────
 const CLAUDE_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
@@ -32,6 +35,7 @@ export interface OAuthSession {
   createdAt: number;
   codeVerifier?: string;
   state?: string;
+  subprocess?: ChildProcess;
 }
 
 export interface OAuthSessionInfo {
@@ -160,9 +164,8 @@ function storeClaudeCredentials(
     refreshToken: tokenRes.refresh_token ?? null,
     expiresAt,
     scopes: CLAUDE_SCOPE.split(" "),
-    subscriptionType:
-      profile.subscriptionType ?? profile.subscription ?? null,
-    rateLimitTier: profile.rateLimitTier ?? null,
+    subscriptionType: profile.subscriptionType,
+    rateLimitTier: profile.rateLimitTier,
   };
 
   fs.writeFileSync(credPath, JSON.stringify(existing, null, 2), {
@@ -224,15 +227,8 @@ class OAuthSessionManager {
       return this.startClaudeOAuth(id);
     }
 
-    const session: OAuthSession = {
-      id,
-      engine,
-      status: "failed",
-      error: `Direct OAuth for ${engine} is not yet implemented. Please use the CLI to log in.`,
-      createdAt: Date.now(),
-    };
-    this.sessions.set(id, session);
-    return id;
+    // Gemini/Codex: use spawn-based approach (CLI handles its own OAuth flow)
+    return this.startSpawnOAuth(id, engine);
   }
 
   private startClaudeOAuth(id: string): string {
@@ -266,6 +262,86 @@ class OAuthSessionManager {
     this.sessions.set(id, session);
     console.log(`[oauth-session] Claude OAuth started, session=${id}`);
     return id;
+  }
+
+  private startSpawnOAuth(id: string, engine: CliEngine): string {
+    const session: OAuthSession = {
+      id,
+      engine,
+      status: "starting",
+      createdAt: Date.now(),
+    };
+    this.sessions.set(id, session);
+
+    try {
+      const spawnCmd = engine === "codex"
+        ? buildCodexSpawnCommand(["login"])
+        : buildGeminiSpawnCommand(["auth", "login"]);
+
+      const child = spawn(spawnCmd.command, spawnCmd.args, {
+        env: { ...spawnCmd.env, BROWSER: "echo", NO_COLOR: "1" },
+        stdio: ["pipe", "pipe", "pipe"],
+        detached: false,
+      });
+
+      session.subprocess = child;
+      session.status = "waiting";
+
+      let outputBuffer = "";
+
+      const processOutput = (chunk: Buffer) => {
+        const text = chunk.toString("utf8");
+        outputBuffer += text;
+        console.log(`[oauth-session] [${engine}] output: ${text.trim()}`);
+
+        if (session.status !== "url_ready" && session.status !== "completed") {
+          const url = this.extractOAuthUrl(outputBuffer);
+          if (url) {
+            session.authUrl = url;
+            session.status = "url_ready";
+          }
+        }
+      };
+
+      child.stdout?.on("data", processOutput);
+      child.stderr?.on("data", processOutput);
+
+      child.on("close", (code) => {
+        console.log(`[oauth-session] [${engine}] process exited with code ${code}`);
+        if (code === 0) {
+          session.status = "completed";
+        } else if (session.status !== "url_ready" && session.status !== "completed") {
+          session.status = "failed";
+          session.error = `Login process exited with code ${code}`;
+        }
+      });
+
+      child.on("error", (err) => {
+        session.status = "failed";
+        session.error = `Process error: ${err.message}`;
+      });
+    } catch (err) {
+      session.status = "failed";
+      session.error = err instanceof Error ? err.message : "Failed to start login";
+    }
+
+    return id;
+  }
+
+  private extractOAuthUrl(text: string): string | undefined {
+    const patterns = [
+      /https?:\/\/[^\s]*accounts\.google\.com[^\s]*/,
+      /https?:\/\/[^\s]*auth\.openai\.com[^\s]*/,
+      /https?:\/\/[^\s]*login\.microsoftonline\.com[^\s]*/,
+      /https?:\/\/[^\s]*oauth[^\s]*/i,
+      /https?:\/\/[^\s]*authorize[^\s]*/i,
+      /https?:\/\/[^\s]*device[^\s]*/i,
+    ];
+    for (const pattern of patterns) {
+      const match = text.match(pattern);
+      if (match) return match[0].replace(/[)>\]'"]+$/, "");
+    }
+    return undefined;
   }
 
   getSession(id: string): OAuthSessionInfo | null {
@@ -347,6 +423,9 @@ class OAuthSessionManager {
   cancelSession(id: string): boolean {
     const session = this.sessions.get(id);
     if (!session) return false;
+    if (session.subprocess && !session.subprocess.killed) {
+      try { session.subprocess.kill("SIGTERM"); } catch { /* */ }
+    }
     this.sessions.delete(id);
     return true;
   }
@@ -355,6 +434,9 @@ class OAuthSessionManager {
     const now = Date.now();
     for (const [id, session] of this.sessions) {
       if (now - session.createdAt > this.TTL_MS) {
+        if (session.subprocess && !session.subprocess.killed) {
+          try { session.subprocess.kill("SIGTERM"); } catch { /* */ }
+        }
         this.sessions.delete(id);
       }
     }

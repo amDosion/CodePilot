@@ -30,6 +30,10 @@ function getCredentialFiles(engine: CliEngine): CredentialFile[] {
           path: path.join(home, ".codex", "auth.json"),
           description: "Codex OAuth credentials",
         },
+        {
+          path: path.join(home, ".codex", "models_cache.json"),
+          description: "Codex models cache",
+        },
       ];
     case "gemini":
       return [
