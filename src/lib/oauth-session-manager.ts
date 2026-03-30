@@ -299,22 +299,35 @@ class OAuthSessionManager {
 
       let outputBuffer = "";
 
+      const stripAnsi = (s: string) =>
+        s.replace(/\x1b\[[0-9;]*m/g, "")
+         .replace(/\[\d+m/g, "")
+         .replace(/\[\?[\d;]*[a-zA-Z]/g, "")
+         .replace(/\[\d*[A-Z]/g, "");
+
       const processOutput = (chunk: Buffer) => {
         const text = chunk.toString("utf8");
         outputBuffer += text;
-        console.log(`[oauth-session] [${engine}] output: ${text.trim()}`);
+        const clean = stripAnsi(outputBuffer);
+        console.log(`[oauth-session] [${engine}] output: ${stripAnsi(text).trim()}`);
 
         if (session.status !== "url_ready" && session.status !== "completed") {
-          const url = this.extractOAuthUrl(outputBuffer);
+          const url = this.extractOAuthUrl(clean);
           if (url) {
             session.authUrl = url;
-            // Extract device code for Codex (format: XXXX-XXXXX, 8+ chars with dash)
-            if (engine === "codex") {
-              const codeMatch = outputBuffer.replace(/\x1b\[[0-9;]*m/g, "").match(/^\s+([A-Z0-9]{4}-[A-Z0-9]{4,6})\s*$/m);
-              if (codeMatch) {
-                session.deviceCode = codeMatch[1];
-              }
+          }
+
+          // For Codex device auth: wait for both URL and device code
+          if (engine === "codex") {
+            const codeMatch = clean.match(/^\s+([A-Z0-9]{4}-[A-Z0-9]{4,6})\s*$/m);
+            if (codeMatch) {
+              session.deviceCode = codeMatch[1];
             }
+            // Only mark ready when we have both URL and device code
+            if (session.authUrl && session.deviceCode) {
+              session.status = "url_ready";
+            }
+          } else if (session.authUrl) {
             session.status = "url_ready";
           }
         }
