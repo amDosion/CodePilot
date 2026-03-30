@@ -1,0 +1,60 @@
+"use client";
+
+import { createContext, useContext } from "react";
+
+export type PanelContent = "files" | "tasks";
+
+export type PreviewViewMode = "source" | "rendered";
+
+export type WorkspaceMode = "local" | "remote";
+export type RemoteConnectionState =
+  | "idle"
+  | "checking"
+  | "ready"
+  | "reconnecting"
+  | "disconnected"
+  | "error";
+
+export interface PanelContextValue {
+  panelOpen: boolean;
+  setPanelOpen: (open: boolean) => void;
+  toggleChatList: () => void;
+  panelContent: PanelContent;
+  setPanelContent: (content: PanelContent) => void;
+  workingDirectory: string;
+  setWorkingDirectory: (dir: string) => void;
+  sessionId: string;
+  setSessionId: (id: string) => void;
+  sessionTitle: string;
+  setSessionTitle: (title: string) => void;
+  streamingSessionId: string;
+  setStreamingSessionId: (id: string) => void;
+  pendingApprovalSessionId: string;
+  setPendingApprovalSessionId: (id: string) => void;
+  /** All sessions with active streams (supports multi-session streaming) */
+  activeStreamingSessions: Set<string>;
+  /** All sessions with pending permission approval */
+  pendingApprovalSessionIds: Set<string>;
+  previewFile: string | null;
+  setPreviewFile: (path: string | null) => void;
+  previewViewMode: PreviewViewMode;
+  setPreviewViewMode: (mode: PreviewViewMode) => void;
+  workspaceMode: WorkspaceMode;
+  setWorkspaceMode: (mode: WorkspaceMode) => void;
+  remoteConnectionId: string;
+  setRemoteConnectionId: (id: string) => void;
+  remoteConnectionReady: boolean;
+  setRemoteConnectionReady: (ready: boolean) => void;
+  remoteConnectionState: RemoteConnectionState;
+  setRemoteConnectionState: (state: RemoteConnectionState) => void;
+}
+
+export const PanelContext = createContext<PanelContextValue | null>(null);
+
+export function usePanel(): PanelContextValue {
+  const ctx = useContext(PanelContext);
+  if (!ctx) {
+    throw new Error("usePanel must be used within a PanelProvider");
+  }
+  return ctx;
+}
