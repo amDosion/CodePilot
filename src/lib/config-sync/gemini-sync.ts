@@ -6,15 +6,20 @@ export function syncGeminiConfig(changes: ConfigSyncChanges): void {
   let changed = false;
 
   if (changes.model) {
-    settings.model = changes.model;
+    // Gemini expects model as object: { name: "model-name" }
+    if (!settings.model || typeof settings.model !== 'object') {
+      settings.model = {};
+    }
+    (settings.model as Record<string, unknown>).name = changes.model;
     changed = true;
   }
 
   if (changes.mode) {
-    if (!settings.permissions || typeof settings.permissions !== 'object') {
-      settings.permissions = {};
+    // Gemini uses general.defaultApprovalMode, not permissions.defaultMode
+    if (!settings.general || typeof settings.general !== 'object') {
+      settings.general = {};
     }
-    (settings.permissions as Record<string, unknown>).defaultMode = changes.mode;
+    (settings.general as Record<string, unknown>).defaultApprovalMode = changes.mode;
     changed = true;
   }
 
