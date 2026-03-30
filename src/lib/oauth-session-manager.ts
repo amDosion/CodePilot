@@ -283,7 +283,7 @@ class OAuthSessionManager {
 
     try {
       const spawnCmd = engine === "codex"
-        ? buildCodexSpawnCommand(["login"])
+        ? buildCodexSpawnCommand(["login", "--device-auth"])
         : buildGeminiSpawnCommand(["auth", "login"]);
 
       const child = spawn(spawnCmd.command, spawnCmd.args, {
