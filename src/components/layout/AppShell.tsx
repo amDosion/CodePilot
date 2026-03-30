@@ -3,6 +3,8 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { HugeiconsIcon } from "@hugeicons/react";
+import { Menu01Icon } from "@hugeicons/core-free-icons";
 import { NavRail } from "./NavRail";
 import { ChatListPanel } from "./ChatListPanel";
 import { RightPanel } from "./RightPanel";
@@ -847,6 +849,14 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                     />
                   )}
                   <UpdateBanner />
+                  {/* Mobile sidebar toggle — always visible on small screens */}
+                  <button
+                    onClick={() => setChatListOpen(!chatListOpen)}
+                    className="lg:hidden flex h-10 w-10 items-center justify-center shrink-0 ml-1 mt-1"
+                    aria-label="Toggle sidebar"
+                  >
+                    <HugeiconsIcon icon={Menu01Icon} className="h-5 w-5 text-muted-foreground" />
+                  </button>
                   <main className="relative flex-1 overflow-hidden">
                     {isSplitActive ? (
                       <SplitChatContainer />
