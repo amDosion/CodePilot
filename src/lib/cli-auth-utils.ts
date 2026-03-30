@@ -188,10 +188,10 @@ function detectCodexAuth(): CliAuthInfo {
       const configContent = fs.readFileSync(configPath, "utf-8");
       // If approvals_reviewer = "user" it means the CLI is configured and likely logged in
       const hasApprovalReviewer = configContent.includes("approvals_reviewer");
-      // Check for models_cache.json which only exists after successful auth
-      const modelsCachePath = path.join(home, ".codex", "models_cache.json");
-      if (hasApprovalReviewer && fs.existsSync(modelsCachePath)) {
-        const cacheModTime = fileModTime(modelsCachePath);
+      // Check for auth.json which exists after successful auth
+      const authFilePath = path.join(home, ".codex", "auth.json");
+      if (hasApprovalReviewer && fs.existsSync(authFilePath)) {
+        const cacheModTime = fileModTime(authFilePath);
         return {
           ...base,
           status: "authenticated",
@@ -213,12 +213,18 @@ function detectCodexAuth(): CliAuthInfo {
     const auth = safeReadJson(authPath);
     if (auth) {
       const isChatGpt = auth.auth_mode === "chatgpt";
+      // Codex stores tokens nested: { tokens: { access_token, refresh_token } }
+      const tokens = (auth.tokens && typeof auth.tokens === "object")
+        ? (auth.tokens as Record<string, unknown>)
+        : null;
       const hasTokens =
         typeof auth.access_token === "string" ||
         typeof auth.accessToken === "string" ||
-        typeof auth.token === "string";
+        typeof auth.token === "string" ||
+        typeof tokens?.access_token === "string";
       if (isChatGpt && hasTokens) {
         const token =
+          (tokens?.access_token as string | undefined) ??
           (auth.access_token as string | undefined) ??
           (auth.accessToken as string | undefined) ??
           (auth.token as string | undefined) ??
@@ -231,6 +237,7 @@ function detectCodexAuth(): CliAuthInfo {
           lastUpdated: fileModTime(authPath),
           account: {
             email: (auth.email as string | undefined) ?? undefined,
+            plan: "ChatGPT",
           },
         };
       }
