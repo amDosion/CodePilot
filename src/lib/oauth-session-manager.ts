@@ -508,7 +508,7 @@ class OAuthSessionManager {
   }
 }
 
-const GLOBAL_KEY = "__codepilot_oauth_session_manager__";
+const GLOBAL_KEY = "__codepilot_oauth_session_manager_v2__";
 
 export function getOAuthSessionManager(): OAuthSessionManager {
   const g = globalThis as Record<string, unknown>;
