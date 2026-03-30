@@ -317,17 +317,15 @@ class OAuthSessionManager {
             session.authUrl = url;
           }
 
-          // For Codex device auth: wait for both URL and device code
+          // Try to extract device code for Codex (optional, newer versions only)
           if (engine === "codex") {
             const codeMatch = clean.match(/^\s+([A-Z0-9]{4}-[A-Z0-9]{4,6})\s*$/m);
             if (codeMatch) {
               session.deviceCode = codeMatch[1];
             }
-            // Only mark ready when we have both URL and device code
-            if (session.authUrl && session.deviceCode) {
-              session.status = "url_ready";
-            }
-          } else if (session.authUrl) {
+          }
+          // Set url_ready as soon as URL is found
+          if (session.authUrl) {
             session.status = "url_ready";
           }
         }
