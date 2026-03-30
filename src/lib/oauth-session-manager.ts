@@ -182,7 +182,13 @@ function extractAuthCode(input: string): string {
     // not a URL
   }
 
-  // Case 2: raw authorization code string
+  // Case 2: platform.claude.com callback page displays "code#state"
+  // Split on # and take the code part
+  if (trimmed.includes("#")) {
+    return trimmed.split("#")[0];
+  }
+
+  // Case 3: raw authorization code string
   return trimmed;
 }
 
@@ -311,7 +317,7 @@ class OAuthSessionManager {
     }
 
     session.status = "exchanging";
-    console.log(`[oauth-session] Exchanging code for session=${sessionId}`);
+    console.log(`[oauth-session] Exchanging code for session=${sessionId}, raw_input_len=${rawInput.length}, extracted_code_len=${code.length}, code_prefix=${code.slice(0, 20)}...`);
 
     try {
       const tokenRes = await exchangeCodeForToken(
