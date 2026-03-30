@@ -1,14 +1,24 @@
-import { spawn, type ChildProcess } from "child_process";
 import crypto from "crypto";
-import { buildClaudeSpawnCommand } from "@/lib/claude-cli";
-import { buildCodexSpawnCommand } from "@/lib/codex-cli";
-import { buildGeminiSpawnCommand } from "@/lib/gemini-cli";
+import fs from "fs";
+import path from "path";
+import os from "os";
 import { type CliEngine } from "@/lib/cli-auth-utils";
 
+// ── Claude OAuth constants (extracted from Claude CLI binary) ───────────
+const CLAUDE_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
+const CLAUDE_AUTH_ENDPOINT = "https://claude.com/cai/oauth/authorize";
+const CLAUDE_TOKEN_ENDPOINT = "https://platform.claude.com/v1/oauth/token";
+const CLAUDE_REDIRECT_URI =
+  "https://platform.claude.com/oauth/code/callback";
+const CLAUDE_SCOPE =
+  "org:create_api_key user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload";
+
+// ── Types ───────────────────────────────────────────────────────────────
 export type OAuthSessionStatus =
   | "starting"
   | "url_ready"
   | "waiting"
+  | "exchanging"
   | "completed"
   | "failed"
   | "expired";
@@ -20,10 +30,10 @@ export interface OAuthSession {
   authUrl?: string;
   error?: string;
   createdAt: number;
-  subprocess?: ChildProcess;
+  codeVerifier?: string;
+  state?: string;
 }
 
-// Serializable subset returned to clients
 export interface OAuthSessionInfo {
   id: string;
   engine: string;
@@ -33,37 +43,157 @@ export interface OAuthSessionInfo {
   createdAt: number;
 }
 
-const URL_PATTERNS = [
-  /https?:\/\/[^\s]*console\.anthropic\.com[^\s]*/,
-  /https?:\/\/[^\s]*claude\.com[^\s]*oauth[^\s]*/,
-  /https?:\/\/[^\s]*auth\.openai\.com[^\s]*/,
-  /https?:\/\/[^\s]*accounts\.google\.com[^\s]*/,
-  /https?:\/\/[^\s]*login\.microsoftonline\.com[^\s]*/,
-  // Generic OAuth URLs that CLIs might print
-  /https?:\/\/[^\s]*oauth[^\s]*/i,
-  /https?:\/\/[^\s]*authorize[^\s]*/i,
-];
-
-function extractOAuthUrl(text: string): string | undefined {
-  for (const pattern of URL_PATTERNS) {
-    const match = text.match(pattern);
-    if (match) {
-      // Clean trailing punctuation that may be captured
-      return match[0].replace(/[)>\]'"]+$/, "");
-    }
-  }
-  return undefined;
+// ── PKCE helpers ────────────────────────────────────────────────────────
+function generateCodeVerifier(): string {
+  return crypto.randomBytes(32).toString("base64url");
 }
 
+function generateCodeChallenge(verifier: string): string {
+  return crypto.createHash("sha256").update(verifier).digest("base64url");
+}
+
+function generateState(): string {
+  return crypto.randomBytes(32).toString("base64url");
+}
+
+// ── Token exchange ──────────────────────────────────────────────────────
+interface TokenResponse {
+  access_token: string;
+  refresh_token?: string;
+  expires_in?: number;
+  token_type?: string;
+}
+
+interface ProfileInfo {
+  subscription?: string;
+  subscriptionType?: string;
+  rateLimitTier?: string;
+  email?: string;
+}
+
+async function exchangeCodeForToken(
+  code: string,
+  state: string,
+  codeVerifier: string,
+): Promise<TokenResponse> {
+  // Matches exact Claude CLI implementation:
+  //   H6.post(TOKEN_URL, body, {headers:{"Content-Type":"application/json"},timeout:15000})
+  const res = await fetch(CLAUDE_TOKEN_ENDPOINT, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "anthropic-beta": "oauth-2025-04-20",
+    },
+    body: JSON.stringify({
+      grant_type: "authorization_code",
+      code,
+      redirect_uri: CLAUDE_REDIRECT_URI,
+      client_id: CLAUDE_CLIENT_ID,
+      code_verifier: codeVerifier,
+      state,
+    }),
+    signal: AbortSignal.timeout(15000),
+  });
+
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(
+      `Token exchange failed (${res.status}): ${text.slice(0, 500)}`,
+    );
+  }
+
+  return (await res.json()) as TokenResponse;
+}
+
+async function fetchProfileInfo(
+  accessToken: string,
+): Promise<ProfileInfo> {
+  try {
+    // The CLI calls fetchProfileInfo with the access_token to get subscription info
+    const res = await fetch(
+      "https://api.anthropic.com/api/oauth/profile",
+      {
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          "Content-Type": "application/json",
+          "anthropic-beta": "oauth-2025-04-20",
+        },
+        signal: AbortSignal.timeout(10000),
+      },
+    );
+    if (res.ok) {
+      return (await res.json()) as ProfileInfo;
+    }
+  } catch {
+    // Non-fatal — we still have the tokens
+  }
+  return {};
+}
+
+// ── Credential storage ──────────────────────────────────────────────────
+function storeClaudeCredentials(
+  tokenRes: TokenResponse,
+  profile: ProfileInfo,
+): void {
+  const claudeDir = path.join(os.homedir(), ".claude");
+  const credPath = path.join(claudeDir, ".credentials.json");
+
+  if (!fs.existsSync(claudeDir)) {
+    fs.mkdirSync(claudeDir, { recursive: true, mode: 0o700 });
+  }
+
+  let existing: Record<string, unknown> = {};
+  try {
+    if (fs.existsSync(credPath)) {
+      existing = JSON.parse(fs.readFileSync(credPath, "utf8"));
+    }
+  } catch {
+    // start fresh
+  }
+
+  const expiresAt = tokenRes.expires_in
+    ? Date.now() + tokenRes.expires_in * 1000
+    : 0;
+
+  existing.claudeAiOauth = {
+    accessToken: tokenRes.access_token,
+    refreshToken: tokenRes.refresh_token ?? null,
+    expiresAt,
+    subscriptionType:
+      profile.subscriptionType ?? profile.subscription ?? null,
+  };
+
+  fs.writeFileSync(credPath, JSON.stringify(existing, null, 2), {
+    mode: 0o600,
+  });
+  console.log("[oauth-session] Claude credentials stored at", credPath);
+}
+
+// ── Extract code from user input ────────────────────────────────────────
+function extractAuthCode(input: string): string {
+  const trimmed = input.trim();
+
+  // Case 1: full redirect URL with code parameter
+  try {
+    const url = new URL(trimmed);
+    const code = url.searchParams.get("code");
+    if (code) return code;
+  } catch {
+    // not a URL
+  }
+
+  // Case 2: raw authorization code string
+  return trimmed;
+}
+
+// ── Session Manager ─────────────────────────────────────────────────────
 class OAuthSessionManager {
   private sessions = new Map<string, OAuthSession>();
-  private readonly TTL_MS = 5 * 60 * 1000; // 5 minutes
+  private readonly TTL_MS = 10 * 60 * 1000;
   private cleanupTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor() {
-    // Run cleanup every 60 seconds
     this.cleanupTimer = setInterval(() => this.cleanup(), 60_000);
-    // Prevent timer from keeping the process alive
     if (
       this.cleanupTimer &&
       typeof this.cleanupTimer === "object" &&
@@ -75,37 +205,58 @@ class OAuthSessionManager {
 
   startOAuth(engine: CliEngine): string {
     const id = crypto.randomUUID();
-    // Kill any existing session for the same engine
+
     for (const [existingId, existing] of this.sessions) {
       if (existing.engine === engine) {
-        if (existing.subprocess && !existing.subprocess.killed) {
-          try { existing.subprocess.kill("SIGKILL"); } catch { /* */ }
-        }
         this.sessions.delete(existingId);
       }
+    }
+
+    if (engine === "claude") {
+      return this.startClaudeOAuth(id);
     }
 
     const session: OAuthSession = {
       id,
       engine,
-      status: "starting",
+      status: "failed",
+      error: `Direct OAuth for ${engine} is not yet implemented. Please use the CLI to log in.`,
       createdAt: Date.now(),
+    };
+    this.sessions.set(id, session);
+    return id;
+  }
+
+  private startClaudeOAuth(id: string): string {
+    const codeVerifier = generateCodeVerifier();
+    const codeChallenge = generateCodeChallenge(codeVerifier);
+    const state = generateState();
+
+    const params = new URLSearchParams({
+      code: "true",
+      client_id: CLAUDE_CLIENT_ID,
+      response_type: "code",
+      redirect_uri: CLAUDE_REDIRECT_URI,
+      scope: CLAUDE_SCOPE,
+      code_challenge: codeChallenge,
+      code_challenge_method: "S256",
+      state,
+    });
+
+    const authUrl = `${CLAUDE_AUTH_ENDPOINT}?${params.toString()}`;
+
+    const session: OAuthSession = {
+      id,
+      engine: "claude",
+      status: "url_ready",
+      authUrl,
+      createdAt: Date.now(),
+      codeVerifier,
+      state,
     };
 
     this.sessions.set(id, session);
-
-    try {
-      this.spawnLoginProcess(session);
-    } catch (err) {
-      session.status = "failed";
-      session.error =
-        err instanceof Error ? err.message : "Failed to start login process";
-      console.error(
-        `[oauth-session] Failed to start ${engine} login:`,
-        err,
-      );
-    }
-
+    console.log(`[oauth-session] Claude OAuth started, session=${id}`);
     return id;
   }
 
@@ -113,9 +264,7 @@ class OAuthSessionManager {
     const session = this.sessions.get(id);
     if (!session) return null;
 
-    // Check if expired
     if (Date.now() - session.createdAt > this.TTL_MS) {
-      this.terminateSession(session);
       session.status = "expired";
     }
 
@@ -129,32 +278,75 @@ class OAuthSessionManager {
     };
   }
 
+  async submitCode(
+    sessionId: string,
+    rawInput: string,
+  ): Promise<{ success: boolean; error?: string }> {
+    const session = this.sessions.get(sessionId);
+    if (!session) {
+      return { success: false, error: "Session not found or expired" };
+    }
+
+    if (session.engine !== "claude") {
+      return {
+        success: false,
+        error: `Code submission not supported for ${session.engine}`,
+      };
+    }
+
+    if (!session.codeVerifier || !session.state) {
+      return { success: false, error: "Session missing PKCE state" };
+    }
+
+    if (session.status !== "url_ready" && session.status !== "waiting") {
+      return {
+        success: false,
+        error: `Invalid session status: ${session.status}`,
+      };
+    }
+
+    const code = extractAuthCode(rawInput);
+    if (!code) {
+      return { success: false, error: "Could not extract authorization code" };
+    }
+
+    session.status = "exchanging";
+    console.log(`[oauth-session] Exchanging code for session=${sessionId}`);
+
+    try {
+      const tokenRes = await exchangeCodeForToken(
+        code,
+        session.state,
+        session.codeVerifier,
+      );
+      const profile = await fetchProfileInfo(tokenRes.access_token);
+      storeClaudeCredentials(tokenRes, profile);
+      session.status = "completed";
+      console.log(
+        `[oauth-session] Claude OAuth completed for session=${sessionId}`,
+      );
+      return { success: true };
+    } catch (err) {
+      const msg =
+        err instanceof Error ? err.message : "Token exchange failed";
+      session.status = "failed";
+      session.error = msg;
+      console.error(`[oauth-session] Token exchange failed:`, err);
+      return { success: false, error: msg };
+    }
+  }
+
   cancelSession(id: string): boolean {
     const session = this.sessions.get(id);
     if (!session) return false;
-    this.terminateSession(session);
     this.sessions.delete(id);
     return true;
-  }
-
-  submitCode(sessionId: string, code: string): boolean {
-    const session = this.sessions.get(sessionId);
-    if (!session || !session.subprocess || session.subprocess.killed) {
-      return false;
-    }
-    try {
-      session.subprocess.stdin?.write(code + "\n");
-      return true;
-    } catch {
-      return false;
-    }
   }
 
   cleanup(): void {
     const now = Date.now();
     for (const [id, session] of this.sessions) {
       if (now - session.createdAt > this.TTL_MS) {
-        this.terminateSession(session);
         this.sessions.delete(id);
       }
     }
@@ -165,129 +357,11 @@ class OAuthSessionManager {
       clearInterval(this.cleanupTimer);
       this.cleanupTimer = null;
     }
-    for (const [, session] of this.sessions) {
-      this.terminateSession(session);
-    }
     this.sessions.clear();
-  }
-
-  private terminateSession(session: OAuthSession): void {
-    if (session.subprocess && !session.subprocess.killed) {
-      try {
-        session.subprocess.kill("SIGTERM");
-      } catch {
-        // Process may already be dead
-      }
-    }
-  }
-
-  private spawnLoginProcess(session: OAuthSession): void {
-    const spawnCmd = this.buildLoginCommand(session.engine);
-
-    const env: NodeJS.ProcessEnv = {
-      ...spawnCmd.env,
-      BROWSER: "echo",
-      NO_COLOR: "1",
-      // Prevent interactive prompts
-      CI: "1",
-    };
-
-    const child = spawn(spawnCmd.command, spawnCmd.args, {
-      env,
-      stdio: ["pipe", "pipe", "pipe"],
-      detached: false,
-    });
-
-    session.subprocess = child;
-    session.status = "waiting";
-
-    let outputBuffer = "";
-
-    const processOutput = (chunk: Buffer) => {
-      const text = chunk.toString("utf8");
-      outputBuffer += text;
-      console.log(
-        `[oauth-session] [${session.engine}] output: ${text.trim()}`,
-      );
-
-      if (session.status !== "url_ready" && session.status !== "completed") {
-        const url = extractOAuthUrl(outputBuffer);
-        if (url) {
-          session.authUrl = url;
-          session.status = "url_ready";
-          console.log(
-            `[oauth-session] [${session.engine}] OAuth URL found: ${url}`,
-          );
-        }
-      }
-    };
-
-    if (child.stdout) {
-      child.stdout.on("data", processOutput);
-    }
-    if (child.stderr) {
-      child.stderr.on("data", processOutput);
-    }
-
-    child.on("close", (code) => {
-      console.log(
-        `[oauth-session] [${session.engine}] process exited with code ${code}`,
-      );
-      if (code === 0) {
-        session.status = "completed";
-      } else if (
-        session.status !== "url_ready" &&
-        session.status !== "completed"
-      ) {
-        session.status = "failed";
-        session.error = `Login process exited with code ${code}. Output: ${outputBuffer.slice(0, 500)}`;
-      }
-      // If status is url_ready, keep it - the user may still complete the flow
-      // The process exits because BROWSER=echo just prints the URL
-    });
-
-    child.on("error", (err) => {
-      console.error(
-        `[oauth-session] [${session.engine}] process error:`,
-        err,
-      );
-      session.status = "failed";
-      session.error = `Process error: ${err.message}`;
-    });
-
-    // Timeout
-    setTimeout(() => {
-      if (session.status === "starting" || session.status === "waiting") {
-        session.status = "failed";
-        session.error = "Login timed out after 5 minutes";
-        this.terminateSession(session);
-      }
-    }, this.TTL_MS);
-  }
-
-  private buildLoginCommand(engine: CliEngine): {
-    command: string;
-    args: string[];
-    env: NodeJS.ProcessEnv;
-  } {
-    switch (engine) {
-      case "claude":
-        return buildClaudeSpawnCommand(["auth", "login"]);
-      case "codex":
-        return buildCodexSpawnCommand(["login"]);
-      case "gemini":
-        return buildGeminiSpawnCommand(["auth", "login"]);
-      default: {
-        // Exhaustive check
-        const _exhaustive: never = engine;
-        throw new Error(`Unknown engine: ${String(_exhaustive)}`);
-      }
-    }
   }
 }
 
-// Singleton instance — use globalThis to survive Next.js HMR reloads
-const GLOBAL_KEY = '__codepilot_oauth_session_manager__';
+const GLOBAL_KEY = "__codepilot_oauth_session_manager__";
 
 export function getOAuthSessionManager(): OAuthSessionManager {
   const g = globalThis as Record<string, unknown>;
