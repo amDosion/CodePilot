@@ -45,6 +45,10 @@ function getCredentialFiles(engine: CliEngine): CredentialFile[] {
           path: path.join(home, ".gemini", "google_accounts.json"),
           description: "Gemini Google accounts",
         },
+        {
+          path: path.join(home, ".gemini", "settings.json"),
+          description: "Gemini settings",
+        },
       ];
     default: {
       const _exhaustive: never = engine;

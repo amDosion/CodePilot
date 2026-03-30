@@ -15,11 +15,13 @@ export function syncGeminiConfig(changes: ConfigSyncChanges): void {
   }
 
   if (changes.mode) {
-    // Gemini uses general.defaultApprovalMode, not permissions.defaultMode
+    // Gemini uses general.defaultApprovalMode with values: default | auto_edit | plan
+    // CodePilot modes: code -> default, plan -> plan
+    const geminiMode = changes.mode === 'plan' ? 'plan' : 'default';
     if (!settings.general || typeof settings.general !== 'object') {
       settings.general = {};
     }
-    (settings.general as Record<string, unknown>).defaultApprovalMode = changes.mode;
+    (settings.general as Record<string, unknown>).defaultApprovalMode = geminiMode;
     changed = true;
   }
 
