@@ -340,9 +340,6 @@ class OAuthSessionManager {
         console.log(`[oauth-session] [${engine}] process exited with code ${exitCode}`);
         if (exitCode === 0) {
           session.status = "completed";
-        } else if (session.status === "url_ready" || session.status === "waiting") {
-          // CLI exited while user was still authenticating
-          // Keep url_ready status so user can still see the instructions
         } else if (session.status !== "completed") {
           session.status = "failed";
           session.error = `Login process exited with code ${exitCode}`;
