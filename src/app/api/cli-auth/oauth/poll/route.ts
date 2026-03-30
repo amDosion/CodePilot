@@ -26,6 +26,7 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({
       status: session.status,
       auth_url: session.authUrl,
+      device_code: session.deviceCode,
       error: session.error,
       engine: session.engine,
       created_at: session.createdAt,

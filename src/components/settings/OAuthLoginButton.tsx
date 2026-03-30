@@ -43,6 +43,7 @@ export function OAuthLoginButton({
   const [errorMessage, setErrorMessage] = useState("");
   const [copied, setCopied] = useState(false);
   const [codeInput, setCodeInput] = useState("");
+  const [deviceCode, setDeviceCode] = useState("");
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const sessionRef = useRef("");
 
@@ -60,6 +61,7 @@ export function OAuthLoginButton({
     setErrorMessage("");
     setLoginUrl("");
     setCodeInput("");
+    setDeviceCode("");
 
     try {
       const res = await fetch("/api/cli-auth/oauth/start", {
@@ -81,13 +83,16 @@ export function OAuthLoginButton({
           const d = (await r.json()) as {
             status: string;
             auth_url?: string;
+            device_code?: string;
             error?: string;
           };
 
           if (d.status === "url_ready" && d.auth_url) {
             setLoginUrl(d.auth_url);
+            if (d.device_code) setDeviceCode(d.device_code);
             setState("url_ready");
-            stopPolling(); // URL is ready, stop polling
+            // For device auth (Codex), keep polling for completion
+            if (!d.device_code) stopPolling();
           } else if (d.status === "completed") {
             stopPolling();
             setState("completed");
@@ -164,6 +169,7 @@ export function OAuthLoginButton({
     setErrorMessage("");
     setLoginUrl("");
     setCodeInput("");
+    setDeviceCode("");
   };
 
   if (state === "idle") {
@@ -219,31 +225,46 @@ export function OAuthLoginButton({
           </Button>
         </div>
 
-        {/* Step 2: Paste code / redirect URL */}
-        <div className="mt-2 border-t pt-3 space-y-2">
-          <p className="text-sm text-muted-foreground">
-            {t("cli.auth.enterCode")}
-          </p>
-          <Input
-            value={codeInput}
-            onChange={(e) => setCodeInput(e.target.value)}
-            placeholder={t("cli.auth.codePlaceholder")}
-            className="font-mono text-xs"
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && codeInput.trim()) {
-                handleSubmitCode();
-              }
-            }}
-          />
-          <Button
-            onClick={handleSubmitCode}
-            disabled={!codeInput.trim()}
-            className="w-full"
-            size="sm"
-          >
-            {t("cli.auth.submitCode")}
-          </Button>
-        </div>
+        {/* Step 2: Device code (Codex) or paste code (Claude/Gemini) */}
+        {deviceCode ? (
+          <div className="mt-2 border-t pt-3 space-y-2">
+            <p className="text-sm text-muted-foreground">
+              Open the link above and enter this code:
+            </p>
+            <div className="rounded-md bg-muted/60 px-4 py-3 text-center font-mono text-lg font-bold tracking-widest select-all">
+              {deviceCode}
+            </div>
+            <div className="flex items-center gap-2 rounded-md bg-blue-500/10 p-3 text-sm text-blue-700 dark:text-blue-400">
+              <HugeiconsIcon icon={Loading02Icon} className="h-4 w-4 animate-spin" />
+              <span>{t("cli.auth.waitingForBrowser")}</span>
+            </div>
+          </div>
+        ) : (
+          <div className="mt-2 border-t pt-3 space-y-2">
+            <p className="text-sm text-muted-foreground">
+              {t("cli.auth.enterCode")}
+            </p>
+            <Input
+              value={codeInput}
+              onChange={(e) => setCodeInput(e.target.value)}
+              placeholder={t("cli.auth.codePlaceholder")}
+              className="font-mono text-xs"
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && codeInput.trim()) {
+                  handleSubmitCode();
+                }
+              }}
+            />
+            <Button
+              onClick={handleSubmitCode}
+              disabled={!codeInput.trim()}
+              className="w-full"
+              size="sm"
+            >
+              {t("cli.auth.submitCode")}
+            </Button>
+          </div>
+        )}
 
         {/* Error from previous attempt */}
         {errorMessage && (

@@ -31,6 +31,7 @@ export interface OAuthSession {
   engine: CliEngine;
   status: OAuthSessionStatus;
   authUrl?: string;
+  deviceCode?: string;
   error?: string;
   createdAt: number;
   codeVerifier?: string;
@@ -43,6 +44,7 @@ export interface OAuthSessionInfo {
   engine: string;
   status: OAuthSessionStatus;
   authUrl?: string;
+  deviceCode?: string;
   error?: string;
   createdAt: number;
 }
@@ -306,6 +308,13 @@ class OAuthSessionManager {
           const url = this.extractOAuthUrl(outputBuffer);
           if (url) {
             session.authUrl = url;
+            // Extract device code for Codex (format: XXXX-XXXXX, 8+ chars with dash)
+            if (engine === "codex") {
+              const codeMatch = outputBuffer.replace(/\x1b\[[0-9;]*m/g, "").match(/^\s+([A-Z0-9]{4}-[A-Z0-9]{4,6})\s*$/m);
+              if (codeMatch) {
+                session.deviceCode = codeMatch[1];
+              }
+            }
             session.status = "url_ready";
           }
         }
@@ -314,13 +323,16 @@ class OAuthSessionManager {
       child.stdout?.on("data", processOutput);
       child.stderr?.on("data", processOutput);
 
-      child.on("close", (code) => {
-        console.log(`[oauth-session] [${engine}] process exited with code ${code}`);
-        if (code === 0) {
+      child.on("close", (exitCode) => {
+        console.log(`[oauth-session] [${engine}] process exited with code ${exitCode}`);
+        if (exitCode === 0) {
           session.status = "completed";
-        } else if (session.status !== "url_ready" && session.status !== "completed") {
+        } else if (session.status === "url_ready" || session.status === "waiting") {
+          // CLI exited while user was still authenticating
+          // Keep url_ready status so user can still see the instructions
+        } else if (session.status !== "completed") {
           session.status = "failed";
-          session.error = `Login process exited with code ${code}`;
+          session.error = `Login process exited with code ${exitCode}`;
         }
       });
 
@@ -365,6 +377,7 @@ class OAuthSessionManager {
       engine: session.engine,
       status: session.status,
       authUrl: session.authUrl,
+      deviceCode: session.deviceCode,
       error: session.error,
       createdAt: session.createdAt,
     };
