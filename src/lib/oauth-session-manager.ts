@@ -69,10 +69,8 @@ interface TokenResponse {
 }
 
 interface ProfileInfo {
-  subscription?: string;
-  subscriptionType?: string;
-  rateLimitTier?: string;
-  email?: string;
+  subscriptionType: string | null;
+  rateLimitTier: string | null;
 }
 
 async function exchangeCodeForToken(
@@ -113,7 +111,6 @@ async function fetchProfileInfo(
   accessToken: string,
 ): Promise<ProfileInfo> {
   try {
-    // The CLI calls fetchProfileInfo with the access_token to get subscription info
     const res = await fetch(
       "https://api.anthropic.com/api/oauth/profile",
       {
@@ -126,12 +123,23 @@ async function fetchProfileInfo(
       },
     );
     if (res.ok) {
-      return (await res.json()) as ProfileInfo;
+      const data = (await res.json()) as {
+        organization?: { organization_type?: string; rate_limit_tier?: string };
+      };
+      console.log("[oauth-session] Profile:", JSON.stringify({
+        orgType: data.organization?.organization_type,
+        rateLimitTier: data.organization?.rate_limit_tier,
+      }));
+      return {
+        subscriptionType: data.organization?.organization_type ?? null,
+        rateLimitTier: data.organization?.rate_limit_tier ?? null,
+      };
     }
-  } catch {
-    // Non-fatal — we still have the tokens
+    console.error("[oauth-session] Profile fetch status:", res.status);
+  } catch (err) {
+    console.error("[oauth-session] Profile fetch error:", err);
   }
-  return {};
+  return { subscriptionType: null, rateLimitTier: null };
 }
 
 // ── Credential storage ──────────────────────────────────────────────────
@@ -371,17 +379,6 @@ class OAuthSessionManager {
       return { success: false, error: "Session not found or expired" };
     }
 
-    if (session.engine !== "claude") {
-      return {
-        success: false,
-        error: `Code submission not supported for ${session.engine}`,
-      };
-    }
-
-    if (!session.codeVerifier || !session.state) {
-      return { success: false, error: "Session missing PKCE state" };
-    }
-
     if (session.status !== "url_ready" && session.status !== "waiting") {
       return {
         success: false,
@@ -392,6 +389,45 @@ class OAuthSessionManager {
     const code = extractAuthCode(rawInput);
     if (!code) {
       return { success: false, error: "Could not extract authorization code" };
+    }
+
+    // Gemini/Codex: write code to subprocess stdin
+    if (session.engine !== "claude") {
+      if (!session.subprocess || session.subprocess.killed) {
+        return { success: false, error: "Login process is not running" };
+      }
+      try {
+        session.subprocess.stdin?.write(code + "\n");
+        session.status = "exchanging";
+        console.log(`[oauth-session] Wrote code to ${session.engine} stdin`);
+        // Wait for process to complete
+        return new Promise((resolve) => {
+          const timeout = setTimeout(() => {
+            if (session.status === "exchanging") {
+              session.status = "completed";
+            }
+            resolve({ success: true });
+          }, 10000);
+          session.subprocess?.on("close", (exitCode) => {
+            clearTimeout(timeout);
+            if (exitCode === 0) {
+              session.status = "completed";
+              resolve({ success: true });
+            } else {
+              session.status = "failed";
+              session.error = `Login process exited with code ${exitCode}`;
+              resolve({ success: false, error: session.error });
+            }
+          });
+        });
+      } catch (err) {
+        return { success: false, error: err instanceof Error ? err.message : "Failed to write code" };
+      }
+    }
+
+    // Claude: direct PKCE token exchange
+    if (!session.codeVerifier || !session.state) {
+      return { success: false, error: "Session missing PKCE state" };
     }
 
     session.status = "exchanging";
